@@ -403,6 +403,10 @@
 				"title": "get synths to start trading:"
 			}
 		},
+		"chart-tooltip": {
+			"trade-total": "Trade total",
+			"price": "Price"
+		},
 		"chart-card": {
 			"info-boxes": {
 				"price": "Price",
