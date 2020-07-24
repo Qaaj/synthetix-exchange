@@ -64,8 +64,7 @@ const Chart: FC<ChartProps> = ({
 		if (isWalletConnected) {
 			fetchMyTradesRequest();
 		}
-		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [isWalletConnected]);
+	}, [isWalletConnected, fetchMyTradesRequest]);
 
 	const intervalOrNull = isWalletConnected ? DEFAULT_REQUEST_REFRESH_INTERVAL : null;
 
