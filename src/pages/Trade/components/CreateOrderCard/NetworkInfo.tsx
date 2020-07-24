@@ -1,6 +1,5 @@
-import React from 'react';
+import React, { FC } from 'react';
 import { useTranslation } from 'react-i18next';
-import PropTypes from 'prop-types';
 import styled from 'styled-components';
 import Tooltip from '@material-ui/core/Tooltip';
 
@@ -14,7 +13,17 @@ import { DataSmall } from 'components/Typography';
 import { ReactComponent as QuestionMark } from 'assets/images/question-mark.svg';
 import { formatPercentage } from 'utils/formatters';
 
-export const TransactionInfo = ({
+type TransactionInfoProps = {
+	gasPrice: number;
+	gasLimit: number;
+	ethRate: number | null;
+	usdRate: number;
+	amount: number;
+	exchangeFeeRate: number;
+	onEditButtonClick: () => void;
+};
+
+export const TransactionInfo: FC<TransactionInfoProps> = ({
 	gasPrice,
 	gasLimit,
 	ethRate = 0,
@@ -44,7 +53,7 @@ export const TransactionInfo = ({
 	);
 
 	return (
-		<Container>
+		<div>
 			<NetworkDataRow>
 				<NetworkData>{t('trade.trade-card.network-info.usd-value')}</NetworkData>
 				<NetworkData>${formatCurrency(usdValue) || 0}</NetworkData>
@@ -69,15 +78,8 @@ export const TransactionInfo = ({
 					</ButtonEdit>
 				</NetworkData>
 			</NetworkDataRow>
-		</Container>
+		</div>
 	);
-};
-
-TransactionInfo.propTypes = {
-	gasPrice: PropTypes.number,
-	gasLimit: PropTypes.number,
-	ethRate: PropTypes.number,
-	onEditButtonClick: PropTypes.func.isRequired,
 };
 
 const TooltipContent = styled.div`
@@ -115,10 +117,6 @@ const QuestionMarkStyled = styled(QuestionMark)`
 	height: 8px;
 `;
 
-const Container = styled.div`
-	margin: 18px 0;
-`;
-
 const NetworkData = styled(DataSmall)`
 	color: ${(props) => props.theme.colors.fontTertiary};
 `;
@@ -131,7 +129,7 @@ const NetworkDataLabelFlex = styled(NetworkData)`
 const NetworkDataRow = styled(FlexDivRow)`
 	display: flex;
 	align-items: center;
-	margin-bottom: 8px;
+	margin-bottom: 4px;
 `;
 
 const ButtonEdit = styled(TextButton)`
