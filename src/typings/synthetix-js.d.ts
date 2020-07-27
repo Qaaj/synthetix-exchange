@@ -70,5 +70,9 @@ declare module 'synthetix-js' {
 				}
 			) => Promise<ethers.ContractTransaction>;
 		};
+		sUSD: {
+			contract: any;
+			approve: any;
+		};
 	}
 }

@@ -448,6 +448,7 @@
 			"table": {
 				"date": "Date | time",
 				"pair": "Pair",
+				"type": "Type",
 				"buying": "Buying",
 				"selling": "Selling",
 				"price": "Price",

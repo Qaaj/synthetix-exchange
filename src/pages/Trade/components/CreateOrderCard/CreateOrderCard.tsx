@@ -1,8 +1,7 @@
-import React, { FC, useState, useEffect, useCallback } from 'react';
+import React, { FC, useState, useEffect, useCallback, useMemo } from 'react';
 import { connect, ConnectedProps } from 'react-redux';
 import styled from 'styled-components';
 import { useTranslation } from 'react-i18next';
-import isEmpty from 'lodash/isEmpty';
 
 import snxJSConnector from 'utils/snxJSConnector';
 
@@ -11,8 +10,8 @@ import { ReactComponent as ReverseArrow } from 'assets/images/reverse-arrow.svg'
 import Card from 'components/Card';
 import NumericInputWithCurrency from 'components/Input/NumericInputWithCurrency';
 
-import { getWalletInfo } from 'ducks/wallet/walletDetails';
-import { getSynthsWalletBalances } from 'ducks/wallet/walletBalances';
+import { getWalletInfo, getIsWalletConnected } from 'ducks/wallet/walletDetails';
+import { getWalletBalancesMap } from 'ducks/wallet/walletBalances';
 import { getSynthPair, getAvailableSynthsMap } from 'ducks/synths';
 import { getRatesExchangeRates, getEthRate } from 'ducks/rates';
 import { RootState } from 'ducks/types';
@@ -39,6 +38,7 @@ import {
 	bytesFormatter,
 	bigNumberFormatter,
 	secondsToTime,
+	getAddress,
 } from 'utils/formatters';
 
 import { Button } from 'components/Button';
@@ -52,20 +52,22 @@ import {
 } from 'shared/commonStyles';
 
 import NetworkInfo from './NetworkInfo';
-import { bigNumberify } from 'ethers/utils';
 import { INPUT_SIZES } from 'components/Input/constants';
+import { getCurrencyKeyBalance, getCurrencyKeyUSDBalanceBN } from 'utils/balances';
+import { APPROVAL_EVENTS } from 'constants/events';
 
 const INPUT_DEFAULT_VALUE = '';
 
 const mapStateToProps = (state: RootState) => ({
 	synthPair: getSynthPair(state),
 	walletInfo: getWalletInfo(state),
-	synthsWalletBalances: getSynthsWalletBalances(state),
+	walletBalancesMap: getWalletBalancesMap(state),
 	exchangeRates: getRatesExchangeRates(state),
 	gasInfo: getGasInfo(state),
 	ethRate: getEthRate(state),
 	transactions: getTransactions(state),
 	synthsMap: getAvailableSynthsMap(state),
+	isWalletConnected: getIsWalletConnected(state),
 });
 
 const mapDispatchToProps = {
@@ -85,7 +87,7 @@ type OrderType = 'limit' | 'market';
 const CreateOrderCard: FC<CreateOrderCardProps> = ({
 	synthPair,
 	walletInfo: { currentWallet, walletType },
-	synthsWalletBalances,
+	walletBalancesMap,
 	exchangeRates,
 	gasInfo,
 	ethRate,
@@ -94,9 +96,10 @@ const CreateOrderCard: FC<CreateOrderCardProps> = ({
 	updateTransaction,
 	transactions,
 	synthsMap,
+	isWalletConnected,
 }) => {
 	const { t } = useTranslation();
-	const [orderType, setOrderType] = useState<OrderType>('market');
+	const [orderType, setOrderType] = useState<OrderType>('limit');
 	const [baseAmount, setBaseAmount] = useState<string>(INPUT_DEFAULT_VALUE);
 	const [quoteAmount, setQuoteAmount] = useState<string>(INPUT_DEFAULT_VALUE);
 	const [limitPrice, setLimitPrice] = useState<string>(INPUT_DEFAULT_VALUE);
@@ -112,6 +115,8 @@ const CreateOrderCard: FC<CreateOrderCardProps> = ({
 	const [feeReclamationError, setFeeReclamationError] = useState<string | null>(null);
 	const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
 	const [hasMarketClosed, setHasMarketClosed] = useState<boolean>(false);
+	const [hasAllowance, setAllowance] = useState<boolean>(false);
+	const [isAllowing, setIsAllowing] = useState<boolean>(false);
 
 	const resetInputAmounts = () => {
 		setBaseAmount(INPUT_DEFAULT_VALUE);
@@ -135,7 +140,6 @@ const CreateOrderCard: FC<CreateOrderCardProps> = ({
 			setPair(synthPair);
 		}
 		resetInputAmounts();
-
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [synthPair.base.name, synthPair.quote.name, synthPair.reversed]);
 
@@ -155,7 +159,6 @@ const CreateOrderCard: FC<CreateOrderCardProps> = ({
 			}
 		};
 		getFeeRateForExchange();
-		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [base.name, quote.name]);
 
 	useEffect(() => {
@@ -181,13 +184,17 @@ const CreateOrderCard: FC<CreateOrderCardProps> = ({
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [base.name, quote.name]);
 
-	const baseBalance =
-		(synthsWalletBalances && synthsWalletBalances.find((synth) => synth.name === base.name)) || 0;
-	const quoteBalance =
-		(synthsWalletBalances && synthsWalletBalances.find((synth) => synth.name === quote.name)) || 0;
-	console.log(baseBalance);
-	const rate = getExchangeRatesForCurrencies(exchangeRates, quote.name, base.name);
-	const inverseRate = getExchangeRatesForCurrencies(exchangeRates, base.name, quote.name);
+	const baseBalance = getCurrencyKeyBalance(walletBalancesMap, base.name) || 0;
+
+	const quoteBalance = getCurrencyKeyBalance(walletBalancesMap, quote.name) || 0;
+	const quoteBalanceBN = getCurrencyKeyUSDBalanceBN(walletBalancesMap, quote.name) || 0;
+
+	const rate = useMemo(() => getExchangeRatesForCurrencies(exchangeRates, quote.name, base.name), [
+		quote.name,
+		base.name,
+		exchangeRates,
+	]);
+	const inverseRate = 1 / rate;
 
 	const buttonDisabled =
 		!baseAmount ||
@@ -196,16 +203,15 @@ const CreateOrderCard: FC<CreateOrderCardProps> = ({
 		isSubmitting ||
 		feeReclamationError != null;
 
-	const isEmptyQuoteBalance = !quoteBalance || !quoteBalance.balance;
+	const isEmptyQuoteBalance = !quoteBalance;
 
 	useEffect(() => {
 		setInputError(null);
 		if (!quoteAmount || !baseAmount) return;
-		if (currentWallet && quoteAmount > quoteBalance.balance) {
+		if (currentWallet && quoteAmount > quoteBalance) {
 			setInputError(t('common.errors.amount-exceeds-balance'));
 		}
-		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [quoteAmount, baseAmount, currentWallet, baseBalance, quoteBalance]);
+	}, [t, quoteAmount, baseAmount, currentWallet, baseBalance, quoteBalance]);
 
 	const getMaxSecsLeftInWaitingPeriod = useCallback(async () => {
 		if (!currentWallet) return;
@@ -230,8 +236,7 @@ const CreateOrderCard: FC<CreateOrderCardProps> = ({
 			console.log(e);
 			setFeeReclamationError(null);
 		}
-		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [quote.name, currentWallet, quoteAmount]);
+	}, [t, quote.name, currentWallet]);
 
 	useEffect(() => {
 		getMaxSecsLeftInWaitingPeriod();
@@ -246,7 +251,7 @@ const CreateOrderCard: FC<CreateOrderCardProps> = ({
 
 			if (!quoteAmount || !quoteBalance || hasSetGasLimit) return;
 			const amountToExchange = tradeAllBalance
-				? quoteBalance.balanceBN
+				? quoteBalanceBN
 				: utils.parseEther(quoteAmount.toString());
 
 			const gasEstimate = await Synthetix.contract.estimate.exchange(
@@ -265,8 +270,66 @@ const CreateOrderCard: FC<CreateOrderCardProps> = ({
 	const setMaxBalance = () => {
 		if (!isEmptyQuoteBalance) {
 			setTradeAllBalance(true);
-			setBaseAmount(`${Number(quoteBalance.balance) * rate}`);
-			setQuoteAmount(quoteBalance.balance);
+			setBaseAmount(`${Number(quoteBalance) * rate}`);
+			setQuoteAmount(quoteBalance);
+		}
+	};
+
+	useEffect(() => {
+		resetInputAmounts();
+		if (isLimitOrder) {
+			setLimitPrice(`${inverseRate}`);
+		}
+	}, [isLimitOrder, inverseRate]);
+
+	useEffect(() => {
+		const { snxJS, limitOrdersContract } = snxJSConnector;
+		// @ts-ignore
+		const synthContract = snxJS[quote.name];
+
+		const getAllowance = async () => {
+			const allowance = await synthContract.allowance(currentWallet, limitOrdersContract.address);
+			setAllowance(!!Number(allowance));
+		};
+
+		const registerAllowanceListener = () => {
+			synthContract.contract.on(APPROVAL_EVENTS.APPROVAL, (owner: string, spender: string) => {
+				if (owner === currentWallet && spender === getAddress(limitOrdersContract.address)) {
+					setAllowance(true);
+					setIsAllowing(false);
+				}
+			});
+		};
+		if (isWalletConnected && synthContract) {
+			getAllowance();
+			registerAllowanceListener();
+		}
+		return () => {
+			if (synthContract) {
+				synthContract.contract.removeAllListeners(APPROVAL_EVENTS.APPROVAL);
+			}
+		};
+	}, [currentWallet, isWalletConnected, quote.name]);
+
+	const handleAllowance = async () => {
+		const { snxJS, limitOrdersContract } = snxJSConnector;
+		// @ts-ignore
+		const synthContract = snxJS[quote.name];
+
+		try {
+			setIsAllowing(true);
+			const maxInt = `0x${'f'.repeat(64)}`;
+			const gasEstimate = await synthContract.contract.estimate.approve(
+				limitOrdersContract.address,
+				maxInt
+			);
+			await synthContract.approve(limitOrdersContract.address, maxInt, {
+				gasLimit: normalizeGasLimit(Number(gasEstimate)),
+				gasPrice: gasInfo.gasPrice * GWEI_UNIT,
+			});
+		} catch (e) {
+			console.log(e);
+			setIsAllowing(false);
 		}
 	};
 
@@ -281,9 +344,35 @@ const CreateOrderCard: FC<CreateOrderCardProps> = ({
 		const transactionId = transactions.length;
 		setTxErrorMessage(null);
 		setIsSubmitting(true);
+
 		try {
+			const usdRate = getExchangeRatesForCurrencies(exchangeRates, base.name, SYNTHS_MAP.sUSD);
+
+			const txProps = {
+				id: transactionId,
+				date: new Date(),
+				base: base.name,
+				quote: quote.name,
+				fromAmount: quoteAmount,
+				toAmount: baseAmount,
+				price:
+					orderType === 'market'
+						? base.name === SYNTHS_MAP.sUSD
+							? rate
+							: inverseRate
+						: limitPrice,
+				amount: formatCurrency(baseAmount),
+				priceUSD:
+					base.name === SYNTHS_MAP.sUSD
+						? getExchangeRatesForCurrencies(exchangeRates, quote.name, SYNTHS_MAP.sUSD)
+						: usdRate,
+				totalUSD: formatCurrency(Number(baseAmount) * usdRate),
+				status: TRANSACTION_STATUS.WAITING,
+				orderType,
+			};
+
 			const amountToExchange = tradeAllBalance
-				? quoteBalance.balanceBN
+				? quoteBalanceBN
 				: utils.parseEther(quoteAmount.toString());
 
 			if (orderType === 'market') {
@@ -296,28 +385,7 @@ const CreateOrderCard: FC<CreateOrderCardProps> = ({
 
 				setGasLimit(rectifiedGasLimit);
 
-				createTransaction({
-					id: transactionId,
-					date: new Date(),
-					base: base.name,
-					quote: quote.name,
-					fromAmount: quoteAmount,
-					toAmount: baseAmount,
-					price:
-						base.name === SYNTHS_MAP.sUSD
-							? getExchangeRatesForCurrencies(exchangeRates, quote.name, base.name)
-							: getExchangeRatesForCurrencies(exchangeRates, base.name, quote.name),
-					amount: formatCurrency(baseAmount),
-					priceUSD:
-						base.name === SYNTHS_MAP.sUSD
-							? getExchangeRatesForCurrencies(exchangeRates, quote.name, SYNTHS_MAP.sUSD)
-							: getExchangeRatesForCurrencies(exchangeRates, base.name, SYNTHS_MAP.sUSD),
-					totalUSD: formatCurrency(
-						Number(baseAmount) *
-							getExchangeRatesForCurrencies(exchangeRates, base.name, SYNTHS_MAP.sUSD)
-					),
-					status: TRANSACTION_STATUS.WAITING,
-				});
+				createTransaction(txProps);
 
 				const tx = await Synthetix.exchange(
 					bytesFormatter(quote.name),
@@ -331,42 +399,36 @@ const CreateOrderCard: FC<CreateOrderCardProps> = ({
 
 				updateTransaction({ status: TRANSACTION_STATUS.PENDING, ...tx }, transactionId);
 			} else {
-				console.log(
+				const executionFee = utils.parseEther('0');
+				const weiDeposit = gasInfo.gasSpeed.fast;
+
+				const gasEstimate = await limitOrdersContractWithSigner.estimate.newOrder(
 					bytesFormatter(quote.name),
-					quoteAmount.toString(),
+					amountToExchange,
 					bytesFormatter(base.name),
-					quoteAmount.toString(),
-					'1',
+					utils.parseEther(`${Number(limitPrice) * Number(quoteAmount)}`),
+					executionFee,
 					{
-						value: '1',
+						value: weiDeposit,
 					}
 				);
-				// add typings
-				/*
-					{
-							newOrder: (
-								sourceCurrencyKey: string,
-								sourceAmount: string,
-								destinationCurrencyKey: string,
-								minDestinationAmount: string,
-								executionFee: string,
-								gas: { value: string }
-							) => Promise<ethers.ContractTransaction>;
-						}
-				*/
+
+				createTransaction(txProps);
+
 				const tx = await limitOrdersContractWithSigner.newOrder(
 					bytesFormatter(quote.name),
 					amountToExchange,
 					bytesFormatter(base.name),
-					limitPrice,
-					bigNumberify(1),
+					utils.parseEther(`${Number(limitPrice) * Number(quoteAmount)}`),
+					executionFee,
 					{
-						value: bigNumberify(1),
+						value: gasInfo.gasSpeed.fast,
 						gasPrice: gasInfo.gasPrice * GWEI_UNIT,
-						gasLimit: 500000,
+						gasLimit: normalizeGasLimit(Number(gasEstimate)),
 					}
 				);
-				console.log(tx);
+
+				updateTransaction({ status: TRANSACTION_STATUS.PENDING, ...tx }, transactionId);
 			}
 			setIsSubmitting(false);
 		} catch (e) {
@@ -384,7 +446,6 @@ const CreateOrderCard: FC<CreateOrderCardProps> = ({
 			setIsSubmitting(false);
 		}
 	};
-
 	return (
 		<Card>
 			<StyledCardHeader>
@@ -409,8 +470,8 @@ const CreateOrderCard: FC<CreateOrderCardProps> = ({
 								>
 									{t('common.wallet.balance-currency', {
 										balance: quoteBalance
-											? formatCurrency(quoteBalance.balance)
-											: !isEmpty(synthsWalletBalances)
+											? formatCurrency(quoteBalance)
+											: walletBalancesMap != null
 											? 0
 											: EMPTY_VALUE,
 									})}
@@ -419,8 +480,8 @@ const CreateOrderCard: FC<CreateOrderCardProps> = ({
 						}
 						onChange={(_, value) => {
 							setTradeAllBalance(false);
-							setBaseAmount(`${Number(value) * rate}`);
 							setQuoteAmount(value);
+							setBaseAmount(`${Number(value) * (isMarketOrder ? rate : 1 / Number(limitPrice))}`);
 						}}
 						errorMessage={inputError}
 					/>
@@ -437,7 +498,7 @@ const CreateOrderCard: FC<CreateOrderCardProps> = ({
 								disabled={isEmptyQuoteBalance}
 								key={`button-fraction-${id}`}
 								onClick={() => {
-									const balance = quoteBalance.balance;
+									const balance = quoteBalance;
 									const isWholeBalance = fraction === 100;
 									const amount = isWholeBalance ? balance : (balance * fraction) / 100;
 									setTradeAllBalance(isWholeBalance);
@@ -450,6 +511,23 @@ const CreateOrderCard: FC<CreateOrderCardProps> = ({
 						))}
 					</BalanceFractionRow>
 				)}
+				{isLimitOrder && (
+					<>
+						<FormInputRow>
+							<StyledNumericInputWithCurrency
+								currencyKey={quote.name}
+								value={`${limitPrice}`}
+								label={<FormInputLabel>{t('common.price-label')}</FormInputLabel>}
+								onChange={(_, value) => {
+									setLimitPrice(value);
+									if (baseAmount) {
+										setBaseAmount(`${Number(quoteAmount) * (1 / Number(value))}`);
+									}
+								}}
+							/>
+						</FormInputRow>
+					</>
+				)}
 				<FormInputRow>
 					<StyledNumericInputWithCurrency
 						currencyKey={base.name}
@@ -458,9 +536,11 @@ const CreateOrderCard: FC<CreateOrderCardProps> = ({
 							<>
 								<FlexDivCentered>
 									<FormInputLabel>{t('trade.trade-card.buy-input-label')}:</FormInputLabel>
-									<ReverseArrowButton onClick={handleSwapCurrencies}>
-										<ReverseArrow />
-									</ReverseArrowButton>
+									{isLimitOrder && (
+										<ReverseArrowButton onClick={handleSwapCurrencies}>
+											<ReverseArrow />
+										</ReverseArrowButton>
+									)}
 								</FlexDivCentered>
 								<StyledFormInputLabelSmall
 									isInteractive={!isEmptyQuoteBalance}
@@ -468,8 +548,8 @@ const CreateOrderCard: FC<CreateOrderCardProps> = ({
 								>
 									{t('common.wallet.balance-currency', {
 										balance: baseBalance
-											? formatCurrency(baseBalance.balance)
-											: !isEmpty(synthsWalletBalances)
+											? formatCurrency(baseBalance)
+											: walletBalancesMap != null
 											? 0
 											: EMPTY_VALUE,
 									})}
@@ -478,25 +558,13 @@ const CreateOrderCard: FC<CreateOrderCardProps> = ({
 						}
 						onChange={(_, value) => {
 							setTradeAllBalance(false);
-							setQuoteAmount(`${Number(value) * inverseRate}`);
 							setBaseAmount(value);
+							setQuoteAmount(
+								`${Number(value) * (isMarketOrder ? inverseRate : Number(limitPrice))}`
+							);
 						}}
 					/>
 				</FormInputRow>
-				{isLimitOrder && (
-					<>
-						<FormInputRow>
-							<StyledNumericInputWithCurrency
-								currencyKey={base.name}
-								value={`${limitPrice}`}
-								label={<FormInputLabel>{t('common.price-label')}</FormInputLabel>}
-								onChange={(_, value) => {
-									setLimitPrice(value);
-								}}
-							/>
-						</FormInputRow>
-					</>
-				)}
 				<NetworkInfoContainer>
 					<NetworkInfo
 						gasPrice={gasInfo.gasPrice}
@@ -519,6 +587,18 @@ const CreateOrderCard: FC<CreateOrderCardProps> = ({
 					</ActionButton>
 				) : synthsMap[base.name].isFrozen ? (
 					<ActionButton disabled={true}>{t('trade.trade-card.frozen-synth')}</ActionButton>
+				) : isLimitOrder ? (
+					hasAllowance ? (
+						<ActionButton disabled={buttonDisabled} onClick={handleSubmit}>
+							{t('trade.trade-card.confirm-trade-button')}
+						</ActionButton>
+					) : (
+						<ActionButton disabled={isAllowing || !isWalletConnected} onClick={handleAllowance}>
+							{!isAllowing
+								? t('common.enable-wallet-access.label')
+								: t('common.enable-wallet-access.progress-label')}
+						</ActionButton>
+					)
 				) : (
 					<ActionButton disabled={buttonDisabled} onClick={handleSubmit}>
 						{t('trade.trade-card.confirm-trade-button')}
